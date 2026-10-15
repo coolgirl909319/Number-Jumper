@@ -1,0 +1,495 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Invartic — Number Jumper</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #080d1d;
+  color: white;
+  text-align: center;
+}
+header { padding: 18px 10px 8px; }
+h1 { margin: 0; color: #70f7ff; font-size: 32px; }
+header p { color: #aebcdb; margin: 8px 0 14px; }
+.hud {
+  display: flex; justify-content: center; gap: 12px;
+  flex-wrap: wrap; margin: 10px;
+}
+.stat {
+  background: #151f39; border: 1px solid #304366;
+  border-radius: 12px; padding: 10px 18px; min-width: 100px;
+}
+.stat span { color: #70f7ff; font-weight: bold; }
+.game-wrap { width: min(960px, 96vw); margin: 0 auto; position: relative; }
+canvas {
+  width: 100%; display: block; border: 2px solid #304366;
+  border-radius: 14px; background: #101a35;
+  touch-action: none;
+}
+#message {
+  color: #ffe78a; min-height: 28px; padding: 10px 5px;
+  font-weight: bold;
+}
+button {
+  border: 0; border-radius: 10px; padding: 11px 18px;
+  font-size: 15px; font-weight: bold; cursor: pointer;
+  background: #70f7ff; color: #081021; margin: 5px;
+}
+button:hover { filter: brightness(1.12); }
+.controls {
+  display: flex; justify-content: center; flex-wrap: wrap;
+  gap: 8px; margin: 8px auto 15px;
+}
+.controls button { min-width: 68px; font-size: 19px; }
+.help { color: #aebcdb; font-size: 13px; padding: 0 12px 18px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ NUMBER JUMPER</h1>
+  <p>Jump. Collect. Dodge. Reach the portal!</p>
+</header>
+
+<div class="hud">
+  <div class="stat">SCORE: <span id="score">0</span></div>
+  <div class="stat">COINS: <span id="coins">0</span></div>
+  <div class="stat">LIVES: <span id="lives">❤️❤️❤️</span></div>
+  <div class="stat">LEVEL: <span id="level">1</span></div>
+</div>
+
+<div class="game-wrap">
+  <canvas id="game" width="960" height="500"></canvas>
+</div>
+
+<div id="message">Collect the glowing number coins and find the portal!</div>
+
+<div class="controls">
+  <button id="leftBtn" aria-label="Move left">◀</button>
+  <button id="jumpBtn" aria-label="Jump">⬆ JUMP</button>
+  <button id="rightBtn" aria-label="Move right">▶</button>
+  <button id="restartBtn">↻ Restart</button>
+</div>
+
+<div class="help">
+  Keyboard: A/D or ←/→ to move · W, ↑ or SPACE to jump.<br>
+  Mobile: use the buttons above. Avoid red hazards and don't fall!
+</div>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const ui = {
+  score: document.getElementById("score"),
+  coins: document.getElementById("coins"),
+  lives: document.getElementById("lives"),
+  level: document.getElementById("level"),
+  message: document.getElementById("message")
+};
+
+const W = canvas.width;
+const H = canvas.height;
+const keys = {};
+let player, platforms, coins, hazards, portal;
+let score, coinCount, lives, level, camera, gameState;
+let particles = [];
+let lastTime = 0;
+let invulnerable = 0;
+
+function makeLevel(n) {
+  // Each level is a longer platforming challenge.
+  const length = 2700 + (n - 1) * 650;
+  platforms = [
+    {x:0, y:430, w:340, h:70},
+    {x:420, y:390, w:180, h:24},
+    {x:680, y:345, w:170, h:24},
+    {x:930, y:400, w:200, h:24},
+    {x:1210, y:350, w:170, h:24},
+    {x:1450, y:300, w:180, h:24},
+    {x:1700, y:380, w:200, h:24},
+    {x:1980, y:330, w:180, h:24},
+    {x:2220, y:390, w:210, h:24},
+    {x:length-250, y:410, w:250, h:90}
+  ];
+
+  // Add extra stepping platforms at higher levels.
+  if (n >= 2) {
+    platforms.push(
+      {x:800, y:270, w:115, h:20},
+      {x:1570, y:235, w:115, h:20},
+      {x:2110, y:255, w:110, h:20}
+    );
+  }
+  if (n >= 3) {
+    platforms.push(
+      {x:1080, y:300, w:110, h:20},
+      {x:1850, y:270, w:110, h:20},
+      {x:2450, y:320, w:110, h:20}
+    );
+  }
+
+  coins = [];
+  const coinPositions = [
+    [150,385],[470,345],[735,300],[990,355],
+    [1260,305],[1500,255],[1760,335],[2030,285],
+    [2290,345],[length-150,365]
+  ];
+  coinPositions.forEach(([x,y],i) => {
+    coins.push({
+      x, y, r:13,
+      value: (i + n) % 3 === 0 ? 5 : 1,
+      taken:false
+    });
+  });
+
+  // Place hazards on selected platforms.
+  hazards = [
+    {x:260,y:410,w:32,h:20, min:200,max:315,dir:1},
+    {x:1000,y:380,w:30,h:20,min:950,max:1090,dir:-1},
+    {x:1760,y:360,w:32,h:20,min:1720,max:1840,dir:1},
+    {x:2300,y:370,w:32,h:20,min:2240,max:2370,dir:-1}
+  ];
+  if (n >= 2) {
+    hazards.push({x:1480,y:280,w:32,h:20,min:1460,max:1580,dir:1});
+  }
+
+  portal = {x:length-95, y:350, w:42, h:60};
+}
+
+function resetGame() {
+  score = 0;
+  coinCount = 0;
+  lives = 3;
+  level = 1;
+  camera = 0;
+  invulnerable = 0;
+  particles = [];
+  gameState = "playing";
+  player = {
+    x:65, y:350, w:30, h:42,
+    vx:0, vy:0, speed:270, jump:-570,
+    grounded:false
+  };
+  makeLevel(level);
+  ui.message.textContent = "Collect coins and reach the glowing portal!";
+  updateHUD();
+}
+
+function updateHUD() {
+  ui.score.textContent = score;
+  ui.coins.textContent = coinCount;
+  ui.lives.textContent = "❤️".repeat(Math.max(0,lives)) +
+                         "🖤".repeat(3-Math.max(0,lives));
+  ui.level.textContent = level;
+}
+
+function jump() {
+  if (gameState !== "playing") return;
+  if (player.grounded) {
+    player.vy = player.jump;
+    player.grounded = false;
+  }
+}
+
+function setKey(code, value) {
+  keys[code] = value;
+}
+
+document.addEventListener("keydown", e => {
+  if (["ArrowLeft","ArrowRight","ArrowUp","Space"].includes(e.code))
+    e.preventDefault();
+  if (!keys[e.code] && ["Space","ArrowUp","KeyW"].includes(e.code)) jump();
+  setKey(e.code,true);
+  if (e.code === "Enter" && gameState !== "playing") resetGame();
+});
+document.addEventListener("keyup", e => setKey(e.code,false));
+
+function holdButton(id, code) {
+  const btn = document.getElementById(id);
+  btn.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    btn.setPointerCapture(e.pointerId);
+    setKey(code,true);
+    if (code === "Space") jump();
+  });
+  const release = e => {
+    e.preventDefault();
+    setKey(code,false);
+  };
+  btn.addEventListener("pointerup",release);
+  btn.addEventListener("pointercancel",release);
+  btn.addEventListener("lostpointercapture",() => setKey(code,false));
+}
+holdButton("leftBtn","ArrowLeft");
+holdButton("rightBtn","ArrowRight");
+holdButton("jumpBtn","Space");
+document.getElementById("restartBtn").addEventListener("click",resetGame);
+
+function collide(a,b) {
+  return a.x < b.x+b.w && a.x+a.w > b.x &&
+         a.y < b.y+b.h && a.y+a.h > b.y;
+}
+
+function burst(x,y,color) {
+  for (let i=0;i<12;i++) {
+    particles.push({
+      x,y,vx:(Math.random()-.5)*180,
+      vy:(Math.random()-.8)*180,
+      life:.55,color
+    });
+  }
+}
+
+function hurt() {
+  if (invulnerable > 0 || gameState !== "playing") return;
+  lives--;
+  invulnerable = 1.5;
+  player.vy = -300;
+  player.vx = player.x < camera + W/2 ? 180 : -180;
+  burst(player.x+player.w/2,player.y+player.h/2,"#ff526d");
+  updateHUD();
+  if (lives <= 0) {
+    gameState = "over";
+    ui.message.textContent = "Game over! Press Restart or Enter to try again.";
+  } else {
+    ui.message.textContent = "Ouch! You lost a life. Keep going!";
+  }
+}
+
+function update(dt) {
+  if (gameState !== "playing") return;
+
+  invulnerable = Math.max(0,invulnerable-dt);
+
+  let move = 0;
+  if (keys.ArrowLeft || keys.KeyA) move--;
+  if (keys.ArrowRight || keys.KeyD) move++;
+  player.vx = move * player.speed;
+
+  player.x += player.vx*dt;
+  player.x = Math.max(0,player.x);
+
+  const oldBottom = player.y+player.h;
+  player.vy += 1450*dt;
+  player.y += player.vy*dt;
+  player.grounded = false;
+
+  // Land only when falling onto a platform.
+  if (player.vy >= 0) {
+    for (const p of platforms) {
+      const horizontal = player.x+player.w > p.x &&
+                         player.x < p.x+p.w;
+      const crossed = oldBottom <= p.y+5 &&
+                      player.y+player.h >= p.y;
+      if (horizontal && crossed) {
+        player.y = p.y-player.h;
+        player.vy = 0;
+        player.grounded = true;
+      }
+    }
+  }
+
+  // Falling off the level costs a life.
+  if (player.y > H+100) {
+    hurt();
+    if (lives > 0) {
+      player.x = Math.max(20,camera+70);
+      player.y = 250;
+      player.vy = 0;
+    }
+  }
+
+  for (const h of hazards) {
+    h.x += h.dir*(90+level*12)*dt;
+    if (h.x < h.min || h.x > h.max) h.dir *= -1;
+    if (collide(player,h)) hurt();
+  }
+
+  for (const c of coins) {
+    if (!c.taken &&
+        player.x < c.x+c.r && player.x+player.w > c.x-c.r &&
+        player.y < c.y+c.r && player.y+player.h > c.y-c.r) {
+      c.taken = true;
+      coinCount++;
+      score += c.value*10;
+      burst(c.x,c.y,"#ffe66d");
+      ui.message.textContent = "+"+(c.value*10)+" points!";
+      updateHUD();
+    }
+  }
+
+  if (collide(player,portal)) {
+    if (level < 3) {
+      level++;
+      score += 100;
+      player.x = 65;
+      player.y = 350;
+      player.vx = 0;
+      player.vy = 0;
+      camera = 0;
+      makeLevel(level);
+      updateHUD();
+      ui.message.textContent = "Level "+level+"! The platforms get trickier!";
+    } else {
+      gameState = "won";
+      score += 200;
+      updateHUD();
+      ui.message.textContent = "🏆 YOU WIN! All 3 levels completed! Press Restart to play again.";
+    }
+  }
+
+  camera = Math.max(0,Math.min(
+    player.x-W*0.35,
+    Math.max(0,portal.x-W+150)
+  ));
+
+  for (const p of particles) {
+    p.x += p.vx*dt;
+    p.y += p.vy*dt;
+    p.life -= dt;
+  }
+  particles = particles.filter(p=>p.life>0);
+}
+
+function roundedRect(x,y,w,h,r,color) {
+  ctx.fillStyle=color;
+  ctx.beginPath();
+  ctx.roundRect(x,y,w,h,r);
+  ctx.fill();
+}
+
+function draw() {
+  // Background gradient.
+  const grad = ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,"#101a38");
+  grad.addColorStop(1,"#241749");
+  ctx.fillStyle=grad;
+  ctx.fillRect(0,0,W,H);
+
+  // Stars.
+  for(let i=0;i<70;i++){
+    const x=((i*137)%W);
+    const y=((i*67)%280);
+    ctx.fillStyle=i%3===0?"#70f7ff":"#7f8cb8";
+    ctx.globalAlpha=.35+(i%4)*.12;
+    ctx.fillRect(x,y,2,2);
+  }
+  ctx.globalAlpha=1;
+
+  // Ground platforms.
+  for(const p of platforms){
+    const x=p.x-camera;
+    if(x+p.w < -20 || x > W+20) continue;
+    roundedRect(x,p.y,p.w,p.h,6,"#283a60");
+    ctx.fillStyle="#70f7ff";
+    ctx.fillRect(x,p.y,p.w,4);
+    ctx.fillStyle="rgba(112,247,255,.10)";
+    ctx.fillRect(x,p.y+5,p.w,p.h-5);
+  }
+
+  // Coins.
+  for(const c of coins){
+    if(c.taken) continue;
+    const x=c.x-camera;
+    ctx.shadowColor="#ffe66d";
+    ctx.shadowBlur=15;
+    ctx.beginPath();
+    ctx.fillStyle="#ffe66d";
+    ctx.arc(x,c.y,c.r,0,Math.PI*2);
+    ctx.fill();
+    ctx.shadowBlur=0;
+    ctx.fillStyle="#72500a";
+    ctx.font="bold 13px Arial";
+    ctx.textAlign="center";
+    ctx.textBaseline="middle";
+    ctx.fillText(String(c.value),x,c.y+1);
+  }
+
+  // Hazards.
+  for(const h of hazards){
+    const x=h.x-camera;
+    ctx.fillStyle="#ff526d";
+    ctx.beginPath();
+    ctx.moveTo(x,h.y+h.h);
+    ctx.lineTo(x+h.w/2,h.y);
+    ctx.lineTo(x+h.w,h.y+h.h);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle="#fff0f3";
+    ctx.fillRect(x+h.w/2-2,h.y+8,4,5);
+  }
+
+  // Portal.
+  const px=portal.x-camera;
+  ctx.save();
+  ctx.shadowColor="#b76bff";
+  ctx.shadowBlur=22;
+  ctx.strokeStyle="#c99aff";
+  ctx.lineWidth=5;
+  ctx.beginPath();
+  ctx.ellipse(px+portal.w/2,portal.y+portal.h/2,
+              portal.w/2,portal.h/2,0,0,Math.PI*2);
+  ctx.stroke();
+  ctx.restore();
+  ctx.fillStyle="#f3ddff";
+  ctx.font="bold 12px Arial";
+  ctx.textAlign="center";
+  ctx.fillText("GO!",px+portal.w/2,portal.y+portal.h/2+4);
+
+  // Player character.
+  const x=player.x-camera;
+  if(invulnerable<=0 || Math.floor(invulnerable*12)%2===0){
+    roundedRect(x,player.y+7,player.w,player.h-7,8,"#70f7ff");
+    roundedRect(x+4,player.y,player.w-8,13,6,"#a3fcff");
+    ctx.fillStyle="#101a35";
+    ctx.fillRect(x+7,player.y+15,5,5);
+    ctx.fillRect(x+19,player.y+15,5,5);
+    ctx.fillStyle="#101a35";
+    ctx.fillRect(x+11,player.y+27,9,3);
+  }
+
+  // Particles.
+  for(const p of particles){
+    ctx.globalAlpha=Math.max(0,p.life/.55);
+    ctx.fillStyle=p.color;
+    ctx.fillRect(p.x-camera,p.y,5,5);
+  }
+  ctx.globalAlpha=1;
+
+  // End-state overlay.
+  if(gameState==="over" || gameState==="won"){
+    ctx.fillStyle="rgba(5,8,20,.76)";
+    ctx.fillRect(0,0,W,H);
+    ctx.textAlign="center";
+    ctx.fillStyle=gameState==="won"?"#ffe66d":"#ff7890";
+    ctx.font="bold 42px Arial";
+    ctx.fillText(gameState==="won"?"LEVEL MASTER!":"GAME OVER",W/2,H/2-22);
+    ctx.fillStyle="#ffffff";
+    ctx.font="20px Arial";
+    ctx.fillText("Final score: "+score,W/2,H/2+18);
+    ctx.font="16px Arial";
+    ctx.fillText("Press Restart or Enter to play again",W/2,H/2+52);
+  }
+}
+
+function loop(timestamp) {
+  const dt=Math.min((timestamp-lastTime)/1000||0,0.033);
+  lastTime=timestamp;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+resetGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
+```
